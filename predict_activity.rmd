@@ -171,7 +171,7 @@ Random forest model is clearly the winner. So let's use it as our final model.
 
 ```{r}
 testing <- cleandata(testing)
-testing$classe <- predict(mdfit_rpart,testing)
+testing$classe <- predict(mdfit_rf,testing)
 ```
 
 Our final prediction for the testing data is 
