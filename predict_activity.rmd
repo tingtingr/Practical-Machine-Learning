@@ -1,0 +1,181 @@
+---
+title: "Predict Manners of Movements in Activities"
+author: "Wenting Rohwer"
+date: "July 11, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Overview
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set.
+
+## Load the Data
+```{r}
+set.seed(1238)
+library(data.table)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(gridExtra)
+library(gbm)
+library(randomForest)
+training <- fread('src/pml-training.csv',na.strings=c("","NA"))
+testing <- fread('src/pml-testing.csv')
+```
+## Data Processing
+
+### 1. Missing data
+```{r}
+dim(training)
+missing_percent <- colSums(sapply(training, is.na)) / dim(training)[1]
+```
+We've noticed there are **100** columns has **97.93%** missing data. This counts for **61.2%** of the total data. All the **100** columns are missing the exact same rows of data.
+
+```{r}
+# percentage of missing data by colums
+head(sort(missing_percent,decreasing = T), 3)
+# percentage of missing data in total
+sum(missing_percent)/dim(training)[2]
+# count of columns have the missing data
+table(melt(missing_percent))
+```
+
+**We will toss these bad various as they will likely to confuse our model. Later, we could try to reintegrate them, maybe with imputed values.**
+
+```{r}
+bad_cols <- melt(which(missing_percent>0.9))$value
+training_na <- training[,bad_cols, with=F]
+tmp <- training[,-bad_cols, with=F]
+# verify we have tossed all the bad rows
+sum(is.na(tmp))
+training <- tmp
+```
+```{r}
+dim(training)
+```
+We now have 406 rows and 160 columns. 
+
+### 2.Modify data types
+
+```{r}
+cleandata <- function(df){
+  df$user_name <- as.factor(df$user_name)
+  cvt <- strptime(df$cvtd_timestamp, "%d/%m/%Y %H:%M")
+  df$year <- year(cvt)
+  df$month <- month(cvt)
+  df$weekday <- as.factor(weekdays(cvt))
+  df$hour <- hour(cvt)
+  df$minute <- minute(cvt)
+  df$new_window <- ifelse(df$new_window == 'yes', 1, 0)
+  df$classe <- as.factor(df$classe)
+  ## remove redundant features
+  df <- subset(df, select=-c(V1,raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp,year))
+  df
+}
+training <- cleandata(training)
+```
+
+From looking at the variable names, we could see the variable names are categorized into four body regions: belt, arm, dumbbell, forearm.
+
+Let's plot 'classe' vs sampled variables contain 'belt','arm','dumbbell','forearm'.
+
+```{r warning = FALSE}
+#yaw_belt
+p1 <- ggplot(data= training, aes(x =roll_belt + pitch_belt + yaw_belt, fill=classe))+geom_histogram(binwidth = 30)
+
+#yaw_arm
+
+p2 <- ggplot(data= training, aes(x =roll_arm + pitch_arm + yaw_arm, fill=classe))+geom_histogram(binwidth = 30)
+
+#yaw_dumbbell
+p3 <- ggplot(data= training, aes(x =roll_dumbbell + pitch_dumbbell + yaw_dumbbell, fill=classe))+geom_histogram(binwidth = 30)
+
+#yaw_forearm
+p4 <- ggplot(data= training, aes(x =roll_forearm + pitch_forearm +yaw_forearm, fill=classe)) + geom_histogram(binwidth = 30)
+
+grid.arrange(p1,p2,p3,p4, ncol = 2)
+
+```
+
+## Training Model 
+We will partition our training data set to a 70% training set and a 30% data set for cross-validation
+```{r}
+intrain <- createDataPartition(y = training$classe, p =0.7,list = F)
+tr <- training[intrain,]
+cv <- training[-intrain,]
+```
+
+### Model 1. Gradient Boosting Machine.
+
+This is a multi-classification problem, so we will use Gradient Boosting Machine method.
+```{r}
+mdfit_gbm <- gbm(classe ~., data= tr)
+pre_gbm <- predict(mdfit_gbm,newdata = cv,n.tree = 100, type='response')
+result_gbm <- data.table(matrix(pre_gbm,5885,5))
+names(result_gbm) <- c('A','B','C','D','E')
+
+result_gbm$predict <- colnames(result_gbm)[max.col(result_gbm,ties.method="first")]
+confusionMatrix(result_gbm$predict,cv$classe)
+```
+
+The accuracy is 52%, slightly better than a fair coin toss.
+
+### Model 2. Regression Tree
+
+```{r}
+grid <-  expand.grid(cp=c(1:10)*0.01)
+mdfit_rpart <- train(classe ~ ., data=tr,method="rpart",tuneGrid=grid,trControl=trainControl(method="cv", number=10))
+```
+```{r}
+plot(mdfit_rpart)
+```
+
+#### Cross-Validation
+
+```{r}
+pre_rpart <- predict(mdfit_rpart, cv, n.tree = 100)
+confusionMatrix(pre_rpart,cv$classe)
+```
+
+
+The accuracy is 73.67%, a big improvement from gbm but I think we might be able to do better.
+
+### Model 3. Random Forest
+
+```{r}
+mdfit_rf <- randomForest(classe ~. , data=tr, method="class")
+pred_rf<- predict(mdfit_rf, cv, type = "class")
+```
+```{r}
+plot(mdfit_rf,main= 'random forest model')
+```
+
+#### Cross-Validation
+
+```{r}
+confusionMatrix(pred_rf, cv$classe)
+```
+
+We have a **99.75%** accuracy on random forest algorithm. The best so far.
+
+### Decision
+
+We will choose random forest model for our final evaluation of the test data. The expected out-of-sample error is 1 - accuracy for predictions on cv set. The expected OOS error is 0.25%. Given we have 20 examples in the test set, we expect we will get very few if not none misclassification.
+
+
+## Submission
+Random forest model is clearly the winner. So let's use it as our final model.
+
+```{r}
+testing <- cleandata(testing)
+testing$classe <- predict(mdfit_rpart,testing)
+```
+
+Our final prediction for the testing data is 
+
+```{r}
+testing$classe
+```
